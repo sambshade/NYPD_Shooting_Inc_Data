@@ -1,0 +1,286 @@
+---
+title: "NYPD Shooting Incident Data"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-04-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Information on Data and Background of Project
+
+This project analyzes the New York Police Department Shooting Data (https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic) gathered from the City of New York and Data.gov. The data set contains the following details about each shooting incident that occurred in New York City between 2006 and 2021: 
+
+* **Incident Key (INCIDENT_KEY):** The specific identification code for the shooting incident that occurred and filed in the NYPD system.
+* **Occur Date (OCCUR_DATE):** The date the shooting incident occurred. 
+* **Boroughs (BORO):** The borough where the shooting incident occurred (Brooklyn, Queens, Bronx, Manhattan, Staten Island).
+* **Precinct (PRECINCT):** The specific police precinct number where the shooting incident occurred.  
+* **Jurisdiction Code (JURISDICTION_CODE):**  The specific number used to define the jurisdiction code in which the shooting incident is categorized. 
+* **Description of the Location (LOCATION_DESC):** A generalized location for where the shooting incident occurred. 
+* **Murder vs. Non-Murder (STATISTICAL_MURDER_FLAG):** Boolean True/False indicating whether the shooting incident was classified as a Murder. 
+* **Perpetrator Age Group (PERP_AGE_GROUP):** The age group of the perpetrator (<18, 18-25. 25-44, 45-64, 65+, Unknown, NA).
+* **Perpetrator Sex (PERP_SEX):** The sex of the perpetrator.
+* **Perpetrator Race (PERP_RACE):** The race of the perpetrator. 
+* **Victim Age Group (VIC_AGE_GROUP):** The age group of the victim (<18, 18-25. 25-44, 45-64, 65+, Unknown).
+* **Victim Sex (VIC_SEX):** The sex of the victim.
+* **Victim Race (VIC_RACE):** The race of the victim.
+* **X Coordinate (X_COORD_CD):** The X coordinate for where the shooting incident occurred. 
+* **Y Coordinate (Y_COORD_CD):** The Y coordinate for where the shooting incident occurred. 
+* **Latitude (Latitude):** The longitude for where the shooting incident occurred. 
+* **Longitude (Longitude):** The latitude for where the shooting incident occurred. 
+* **Longitude/Latitude (Lon_Lat):** Combined longitude and latitude point where the shooting incident occurred. 
+
+## Tidy and Transform the Data:
+
+The first step in this project is to tidy and transform the data to prepare it for visualization and analysis. The following libraries were imported to help with this project:
+
+* Tidyverse 
+* Leaflet (including Leaflet Extras) 
+* Corrplot 
+```{r library}
+library(tidyverse) #ggplot, tidy, etc. functions 
+library(leaflet) #NYC map visual + heatmap
+library(leaflet.extras) #used for heatmap
+library(corrplot) #correlation plot analysis
+```
+
+The data was pulled from the CSV file from Data.gov. The link to the CSV file was saved as `url` and using `read_csv()` the data was transferred to the dataframe titled `nypd_df`.
+```{r url}
+url <- 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD'
+nypd_df <- read_csv(url)
+summary(nypd_df)
+```
+
+The date, `OCCUR_DATE`, was converted to a date, and the time count, `OCCUR_TIME`, was changed to a time using the Lubridate library.
+```{r time, fig.width=12, fig.height=8}
+nypd_df <- nypd_df %>%
+  mutate(OCCUR_TIME = hms(OCCUR_TIME), 
+         OCCUR_DATE = mdy(OCCUR_DATE)) %>%
+  mutate(Year = year(OCCUR_DATE), 
+         Month = month(OCCUR_DATE), 
+         Day = wday(OCCUR_DATE, label = TRUE), 
+         Hour_Of_Day = hour(OCCUR_TIME))
+nypd_df
+```
+
+To later analyze how each Borough in NYC is impacted by these shooting incidents, the population of each Borough in NYC is needed so that the number of incidents is not exaggerated in high-population areas or reduced in low-population areas. To analyze this, census data from New York was downloaded into a csv file and saved to `url_census_info`. Using the `read_csv` function, this data was saved to a dataframe, titled `census_data` The data included the total population by borough. 
+
+Since this file was saved as a csv on my personal computer, the creation of url_census_info was hidden. The link to the website where the information was obtained is: https://data.cityofnewyork.us/City-Government/New-York-City-Population-by-Borough-1950-2040/xywu-7bv9
+```{r url2, include = FALSE}
+url_census_info <-'/Users/samshade/Downloads/New_York_City_Population_by_Borough__1950_-_2040.csv'
+```
+```{r read2, fig.width=12, fig.height=8}
+census_data <- read_csv(url_census_info) 
+summary(census_data)
+```
+
+The census data was then further cleaned so that it could be merged into `nypd_df` The cleaning process included:
+
+* Removing some of the years and population data that are not in the scope of this project.
+* Renaming Borough to match BORO in `nypd_df`
+* Renaming all of the individual Boroughs to match in `nypd_df`
+```{r census, fig.width=12, fig.height=8}
+census_data <- census_data[, c('2000', '2010', '2020', '2030', 'Borough')] # removing all of the years of statistics outside of the scope of the NYPD Shooting data. 
+colnames(census_data)[5] = "BORO" #rename column to match BORO from the other nypd_df for later merge
+new_census_data <- gather(census_data, key = "Year", value = "Population", -BORO) #rearrange all years into one column and all populations into one column
+new_census_data <- new_census_data %>% # rename all of the boroughs to match the nypd_df dataframe
+  mutate(BORO = if_else(BORO == "Bronx", "BRONX", BORO)) %>%
+  mutate(BORO = if_else(BORO == "Brooklyn", "BROOKLYN", BORO)) %>% 
+  mutate(BORO = if_else(BORO == "Manhattan", "MANHATTAN", BORO)) %>%
+  mutate(BORO = if_else(BORO == "Queens", "QUEENS", BORO)) %>%
+  mutate(BORO = if_else(BORO == "Staten Island", "STATEN ISLAND", BORO))
+new_census_data 
+```
+The population analysis specifically will look at each borough in NYC; therefore a new dataframe was made to include the count of incidents and the year. This was then later merged with the population dataframe to create the `ny_boro_and_pop` dataframe that contains Borough, Year, Population, and Shooting Incident Count.
+
+Additional dataframes were made for analyzing when these shooting incidents occur, based on the month of the year and time of day. These dataframes were created here for later visualizations as well. 
+```{r newdfs}
+nypd_by_boro <- nypd_df %>% 
+  count(BORO, Year, sort = TRUE) #create a new dataframe containing Borough name, Year, and number of incidents
+
+nypd_by_year <- nypd_df %>%
+  count(Year, Month, sort = TRUE) #create a new dataframe that contains year, month, and number of incidents. 
+
+nypd_by_hour <- nypd_df %>% #create a new dataframe that contains day, the hour of day, and number of incidents. 
+  count(Day, Hour_Of_Day, sort = TRUE)
+```
+
+```{r merger}
+ny_boro_and_pop <- merge(nypd_by_boro, new_census_data, by="BORO") # merge 
+ny_boro_and_pop$Year.y <- as.numeric(as.character(ny_boro_and_pop$Year.y))
+```
+
+## Visualizations and Analysis:
+### What borough in NYC has the most shooting incidents? 
+The first visualization examines the number of incidents that occurred in each borough of NYC from 2006-2021. The first graph was scaled based on the population, to reflect how many incidents are happening per 100,000 people in a borough. The second graph looks at the overall count of the incidents per borough. The last visualization is an interactive heatmap, from the leaflet library, that further shows the hotspots for these incidents. 
+```{r vis, fig.width=12, fig.height=8}
+ggplot(ny_boro_and_pop) + 
+  geom_bar(aes(x = Year.x, 
+               y = n/(Population/100000), 
+               fill = factor(BORO)), 
+           stat = "identity", 
+           position = "dodge") + 
+  labs(title = "NYPD Shooting Incidents Per Year in Each Borough 2006 - 2021", 
+       x = "Year", 
+       y = "Num. of Incidents per 100,000 People", 
+       fill = "Borough") 
+
+ggplot(ny_boro_and_pop) + 
+  geom_bar(aes(x = Year.x, 
+               y = n, 
+               fill = factor(BORO)), 
+           stat = "identity", 
+           position = "dodge") + 
+  labs(title = "NYPD Shooting Incidents Per Year in Each Borough 2006 - 2021", 
+       x = "Year", 
+       y = "Num. of Incidents", 
+       fill = "Borough") 
+```
+```{r map, fig.width=8, fig.height=8}
+nypd_df <- nypd_df[!is.na(nypd_df$Latitude), ] #remove NA specifically from the Latitude column
+nypd_df <- nypd_df[!is.na(nypd_df$Longitude), ] #remove NA specifically from the Longitude column
+nypd_df %>% 
+  leaflet() %>%
+  addTiles()%>%
+  fitBounds(max(nypd_df$Longitude), 
+            min(nypd_df$Latitude), 
+            min(nypd_df$Longitude), 
+            max(nypd_df$Latitude)) %>% 
+  addHeatmap(lng=nypd_df$Longitude, 
+             lat=nypd_df$Latitude, 
+             blur=30, 
+             radius=15)
+```
+
+### When are these shooting incidents happening?: 
+The next set of visualizations looks at when these shooting events are occurring in NYC; specifically, the month of the year and the time of the day. 
+```{r vis2, fig.width=12, fig.height=8}
+ggplot(nypd_by_year, aes(x = Month, y = n, fill=factor(Year))) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_x_continuous(breaks = seq_along(month.name),
+                     labels=month.name) + 
+  theme(axis.text.x = element_text(angle = 55, hjust = 1)) +
+  labs(title = "NYPD Shooting Incidents Per Month from 2006 - 2021", 
+       x = "Month", 
+       y = "Num. of Incidents", 
+       fill = "Year")
+
+ggplot(nypd_by_hour, aes(x = Hour_Of_Day, y = n, fill=factor(Day))) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(title = "NYPD Shooting Incidents Per Time of Day from 2006 - 2021", 
+       x = "Hour of the Day", 
+       y = "Num. of Incidents", 
+       fill = "Day of The Week")
+```
+
+### How do the variables in the data correlate?:
+Several variables were examined via a correlation plot and heatmap to understand which models will potentially be successful using linear regression modeling. These variables include:
+
+* Borough
+* Statistical Murder Flag
+* Perpetrator Age Group, Sex, and Race
+* Victim Age Group, Sex, and Race
+
+To examine this information, the `nypd_corr` dataframe was created. All 'NA' values were omitted and all of the variables were factored and made numeric. The names of the dataframe were changed to allow for a cleaner visualization. The dataframe was turned into a correlation matrix via the `cor()` function. This matrix was then visualized via a heatmap and a correlation plot (created with the use of Corrplot).
+```{r corr, fig.width=12, fig.height=8}
+nypd_corr <- select(nypd_df, c("BORO", "STATISTICAL_MURDER_FLAG", "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE",)) #select wanted variables
+nypd_corr <- na.omit(nypd_corr) #omit all NA values
+
+nypd_corr$BORO <- factor(nypd_corr$BORO) #factor and make numeric for all variables in nypd_corr
+nypd_corr$BORO <- as.numeric(nypd_corr$BORO)
+
+nypd_corr$STATISTICAL_MURDER_FLAG <- factor(nypd_corr$STATISTICAL_MURDER_FLAG)
+nypd_corr$STATISTICAL_MURDER_FLAG <- as.numeric(nypd_corr$STATISTICAL_MURDER_FLAG)
+
+nypd_corr$PERP_AGE_GROUP <- factor(nypd_corr$PERP_AGE_GROUP)
+nypd_corr$PERP_AGE_GROUP <- as.numeric(nypd_corr$PERP_AGE_GROUP)
+
+nypd_corr$PERP_RACE <- factor(nypd_corr$PERP_RACE)
+nypd_corr$PERP_RACE <- as.numeric(nypd_corr$PERP_RACE)
+
+nypd_corr$PERP_SEX <- factor(nypd_corr$PERP_SEX)
+nypd_corr$PERP_SEX <- as.numeric(nypd_corr$PERP_SEX)
+
+nypd_corr$VIC_AGE_GROUP <- factor(nypd_corr$VIC_AGE_GROUP)
+nypd_corr$VIC_AGE_GROUP <- as.numeric(nypd_corr$VIC_AGE_GROUP)
+
+nypd_corr$VIC_RACE <- factor(nypd_corr$VIC_RACE)
+nypd_corr$VIC_RACE <- as.numeric(nypd_corr$VIC_RACE)
+
+nypd_corr$VIC_SEX <- factor(nypd_corr$VIC_SEX)
+nypd_corr$VIC_SEX <- as.numeric(nypd_corr$VIC_SEX)
+
+names(nypd_corr) <- c('Boro', 'MurderSym.', 'PerpAgeGrp', 'PerpSex', 'PerpRace', 'VicAgeGrp', 'VicSex', 'VicRace')
+
+nypd_corr_matrix <- cor(nypd_corr)
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = nypd_corr_matrix, col = col, symm = TRUE)
+corrplot(nypd_corr_matrix)
+```
+
+### Can we predict any perpetrator information based on available victim information?
+The previous visualizations show some correlation between victim and perpetrator characteristics (Age Group, Sex, Race). Three linear regression models were created below to understand how these variables are related and how well we can predict information regarding the perpetrator based on the victim’s information. All three models utilize the victim’s sex, age, and race as independent variables. The first model looks to predict the perpetrator’s age group, the second model predicts the sex of the perpetrator, and the final model predicts the race of the perpetrator. 
+
+Examining these characteristics is purely for the study of correlation and linear regression. Using any models to predict a person’s race, age, or sex is considered unethical. This becomes especially true if the model making the prediction leads to an arrest, or other life-changing decision, that was unwarranted for someone. 
+```{r pred}
+set.seed(123)
+train_indices <- sample(nrow(nypd_corr), nrow(nypd_corr)*0.8)
+
+train_data <- nypd_corr[train_indices,] #create training data
+test_data <- nypd_corr[-train_indices,] #create testing data
+model_age <- lm(PerpAgeGrp ~ VicAgeGrp + VicSex + VicRace, data=train_data) #linear regression model to predict PerpAgeGrp
+pred_age <- predict(model_age, newdata=test_data) #predict using above model
+mse_age <- mean((test_data$PerpAgeGrp - pred_age)^2) #calculate mse
+rmse_age <- sqrt(mse_age) #calculate rmse
+rsq_age <- summary(model_age)$r.squared #calculate r-squared
+cat("RMSE Age:", rmse_age, "\n")
+cat("R-squared Age:", rsq_age, "\n")
+
+model_sex <- lm(PerpSex ~ VicAgeGrp + VicSex + VicRace, data=train_data) #linear regression model to predict PerpSex
+pred_sex <- predict(model_sex, newdata=test_data) #predict using above model
+mse_sex <- mean((test_data$PerpSex- pred_sex)^2) #calculate mse 
+rmse_sex <- sqrt(mse_sex) #calculate rmse
+rsq_sex <- summary(model_sex)$r.squared #calculate r-squared
+cat("RMSE Sex:", rmse_sex, "\n")
+cat("R-squared Sex:", rsq_sex, "\n")
+
+model_race <- lm(PerpRace ~ VicAgeGrp + VicSex + VicRace, data=train_data) #linear regression model to predict PerpRage
+pred_race <- predict(model_race, newdata=test_data) #predict using above model
+mse_race <- mean((test_data$PerpRace- pred_race)^2) #calculate mse 
+rmse_race <- sqrt(mse_race) #calculate rmse
+rsq_race <- summary(model_race)$r.squared #calculate r-squared 
+cat("RMSE Race:", rmse_race, "\n")
+cat("R-squared Race:", rsq_race, "\n")
+```
+
+## Conclusions:
+The analysis of this project included answering the following four questions regarding the NYPD Shooting Incident Data from 2006-2021: 
+
+#### What borough in NYC has the most shooting incidents?: 
+* Brooklyn has the most shooting incidents in terms of number of incidents that occur in a year. When examining the number of incidents per borough population, it was found that the Bronx had the most shooting incidents per population per year. The rankings for each of these categories are provided below:
+
+    * Most Total Number of Incidents:
+      1. Brooklyn
+      2. Bronx
+      3. Queens
+      4. Manhattan
+      5. Staten Island 
+
+    * Most Number Incidents Per Population:
+      1. Bronx
+      2. Brooklyn
+      3. Manhattan
+      4. Queens
+      5. Staten Island
+
+#### When are these shooting incidents happening?: 
+* There is a significant increase in shooting incidents in New York City during the nighttime, weekends, and summer months. Specifically, Saturday and Sunday, around midnight to 3:00 AM, in June, July, or August, is the most likely time these events occur. This is even more likely in most recent years (2020 - 2022) than in the earlier years of the data. One possibility of this spike in incidents in recent years could be the COVID-19 pandemic, which began around the same time; however, this is not proven in the data provided. The mid-late teens (2014 - 2018) appear to have the least number of shootings in NYC during 2006 - 2021. 
+
+#### How do the variables in the data correlate?:
+* There is very little correlation in the data as shown in the visualizations. Some correlation was present in the perpetrator's information (correlation amongst the perpetrator’s age, sex, and race); however, this correlation was not considered much. Additionally, some correlation was present in the same perpetrator’s characteristics vs. the victim’s same characteristics. 
+
+#### Can we predict any perpetrator information based on available victim information?:
+* We cannot accurately predict any perpetrator information utilizing a linear regression model. The R-squared values ranged from 0.006 - 0.086 when the initial prediction was run. The perpetrator’s sex had the least success in prediction, while the perpertrator’s race had the most. The RSME values also indicated that the model was not successful. This analysis was conducted based on the need for NYPD, and other police departments, to be able to quickly identify a perpetrator. As mentioned previously, this also presents a significant amount of ethical questions; therefore, the analysis of this should not be considered practical, especially considering the poor results of the model. 
